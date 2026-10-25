@@ -414,6 +414,25 @@ def _fling_files(page_url: str) -> List[Dict[str, str]]:
     return files[:8]
 
 
+NOISE_LINE = re.compile(
+    r"(ATTENTION: default value|ProtonFixes|\[Gamescope WSI\]|pApplicationName|applicationVersion|"
+    r"pEngineName|engineVersion|apiVersion|unit test)",
+    re.I,
+)
+
+
+def _attempt_output(start: int, limit: int = 12) -> str:
+    """Últimas linhas úteis que a tentativa de lançamento escreveu no log."""
+    try:
+        with LOG_FILE.open("rb") as fh:
+            fh.seek(start)
+            text = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not NOISE_LINE.search(ln)]
+    return "\n".join(lines[-limit:])
+
+
 # ------------------------------------------------------------------ lançamento
 
 def _find_launch_client(env: Dict[str, str]) -> Optional[str]:
@@ -657,6 +676,10 @@ class Plugin:
                 continue
             _log(f"lançando [{att['label']}]: {' '.join(att['cmd'])}")
             try:
+                log_start = LOG_FILE.stat().st_size if LOG_FILE.exists() else 0
+            except OSError:
+                log_start = 0
+            try:
                 with LOG_FILE.open("a", encoding="utf-8") as logfh:
                     proc = subprocess.Popen(
                         att["cmd"],
@@ -674,7 +697,10 @@ class Plugin:
             await asyncio.sleep(4)
             code = proc.poll()
             if code not in (None, 0):
-                last_error = f"Modo {att['label']} terminou com código {code}. Veja o log."
+                detail = _attempt_output(log_start)
+                last_error = f"Modo {att['label']} terminou com código {code}."
+                if detail:
+                    last_error += "\n" + detail
                 _log(last_error)
                 continue
             self.procs.setdefault(appid, []).append(proc)
@@ -721,7 +747,8 @@ class Plugin:
         lines.append("")
         lines.append("--- últimas linhas do log ---")
         try:
-            tail = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()[-25:]
+            raw = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+            tail = [ln for ln in raw if not NOISE_LINE.search(ln)][-40:]
             lines.extend(tail)
         except OSError:
             lines.append("(sem log)")
