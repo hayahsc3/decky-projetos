@@ -1,0 +1,16 @@
+# Node / build do Decky
+node_modules/
+dist/
+out/
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Sistema e editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

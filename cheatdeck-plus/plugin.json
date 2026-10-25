@@ -1,0 +1,11 @@
+{
+  "name": "CheatDeck Plus",
+  "author": "CheatDeck Plus",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["utility", "trainers", "cheats"],
+    "description": "Execute trainers FLiNG (e outros .exe) no mesmo prefixo Proton do jogo em execução, direto do Modo Jogo.",
+    "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/decky-plugin-template"
+  }
+}
