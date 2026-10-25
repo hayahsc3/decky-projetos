@@ -1,0 +1,11 @@
+{
+  "name": "SaveBackupSD",
+  "author": "Seu Nome",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["backup", "saves", "microsd"],
+    "description": "Lista seus jogos instalados, faz backup dos saves para o microSD e restaura quando precisar.",
+    "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
+  }
+}
