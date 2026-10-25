@@ -1,0 +1,52 @@
+name: Release SaveBackupSD
+
+# Publica o zip instalável em Releases ao criar uma tag como: save-backup-sd-v1.0.0
+on:
+  push:
+    tags:
+      - "save-backup-sd-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: save-backup-sd
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Instalar dependências
+        run: npm install --no-audit --no-fund
+
+      - name: Build e empacotar
+        run: npm run zip
+
+      - name: Nomear o zip com a versão
+        id: pkg
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          cp SaveBackupSD.zip "SaveBackupSD-v${VERSION}.zip"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Publicar release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="save-backup-sd-v${{ steps.pkg.outputs.version }}"
+          FILE="SaveBackupSD-v${{ steps.pkg.outputs.version }}.zip"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$FILE" --clobber
+          else
+            gh release create "$TAG" "$FILE" \
+              --title "SaveBackupSD v${{ steps.pkg.outputs.version }}" \
+              --notes "Zip instalável do plugin. No Decky: Configurações → Desenvolvedor → instalar plugin a partir de ZIP." \
+              --target "${{ github.sha }}"
+          fi
