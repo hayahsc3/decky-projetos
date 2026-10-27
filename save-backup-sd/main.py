@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import stat
 import struct
 import subprocess
@@ -504,9 +505,21 @@ _mount_fail_ts = 0.0
 _mount_fail_msg = ""
 
 
-def _run_cmd(args: List[str], timeout: float = 25.0) -> Tuple[int, str]:
+def _clean_env() -> Dict[str, str]:
+    """Ambiente sem as bibliotecas do PyInstaller do Decky, que quebram curl/mount/lsblk do sistema."""
+    env = dict(os.environ)
+    orig = env.pop("LD_LIBRARY_PATH_ORIG", None)
+    env.pop("LD_LIBRARY_PATH", None)
+    if orig:
+        env["LD_LIBRARY_PATH"] = orig
+    env.pop("LD_PRELOAD", None)
+    return env
+
+
+def _run_cmd(args: List[str], timeout: float = 25.0, stdin: Optional[str] = None) -> Tuple[int, str]:
     try:
-        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                           env=_clean_env(), input=stdin)
         return p.returncode, ((p.stdout or "") + (p.stderr or "")).strip()
     except FileNotFoundError:
         return 127, f"comando não encontrado: {args[0]}"
@@ -1243,19 +1256,62 @@ def pick_latest(releases: Any) -> Optional[Dict[str, Any]]:
     return best
 
 
-def _http_json(url: str, token: str) -> Tuple[int, Any]:
+CA_BUNDLES = (
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/ca-certificates/extracted/tls-ca-bundle.pem",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/cert.pem",
+)
+
+
+def _ssl_context() -> ssl.SSLContext:
+    for f in CA_BUNDLES:
+        if os.path.isfile(f):
+            try:
+                return ssl.create_default_context(cafile=f)
+            except (ssl.SSLError, OSError):
+                continue
+    return ssl.create_default_context()
+
+
+def _curl_json(url: str, headers: Dict[str, str]) -> Tuple[int, Any, str]:
+    cfg = "".join(f'header = "{k}: {v}"\n' for k, v in headers.items())
+    rc, out = _run_cmd(["curl", "-sS", "-L", "--max-time", "20", "-K", "-", "-w", "\n%{http_code}", url],
+                       30, stdin=cfg)
+    if rc != 0:
+        return 0, None, f"curl: {out[:160] or rc}"
+    body, _, code = out.rpartition("\n")
+    try:
+        status = int(code.strip())
+    except ValueError:
+        return 0, None, "curl: resposta inválida"
+    try:
+        return status, json.loads(body) if body.strip() else None, ""
+    except ValueError:
+        return status, None, ""
+
+
+def _http_json(url: str, token: str) -> Tuple[int, Any, str]:
+    """GET JSON. Devolve (status, dados, detalhe_do_erro). status 0 = falha de rede/TLS."""
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "SaveBackupSD-updater",
                "X-GitHub-Api-Version": "2022-11-28"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, headers=headers)
+    detail = ""
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.status, json.loads(resp.read().decode("utf-8"))
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15, context=_ssl_context()) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8")), ""
     except urllib.error.HTTPError as e:
-        return e.code, None
-    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
-        return 0, None
+        return e.code, None, ""
+    except Exception as e:  # noqa: BLE001 - URLError, SSLError, timeout, JSON...
+        detail = f"{type(e).__name__}: {e}"
+        decky.logger.warning(f"urllib falhou ({detail}); tentando curl")
+    status, data, cdetail = _curl_json(url, headers)
+    if status == 0:
+        decky.logger.warning(f"curl também falhou: {cdetail}")
+        return 0, None, f"{detail} | {cdetail}"
+    return status, data, ""
 
 
 def check_update(force: bool = False) -> Dict[str, Any]:
@@ -1273,7 +1329,7 @@ def check_update(force: bool = False) -> Dict[str, Any]:
         return out
 
     repo = settings["update_repo"]
-    status, data = _http_json(f"https://api.github.com/repos/{repo}/releases?per_page=30", token)
+    status, data, detail = _http_json(f"https://api.github.com/repos/{repo}/releases?per_page=30", token)
     if status == 200:
         rel = pick_latest(data)
         if rel:
@@ -1282,7 +1338,7 @@ def check_update(force: bool = False) -> Dict[str, Any]:
             base["url"] = str(rel.get("html_url", ""))
             base["available"] = parse_version(latest) > parse_version(cur)
     elif status == 0:
-        base["error"] = "Sem conexão com a internet."
+        base["error"] = "Não foi possível conectar ao GitHub: " + (detail[:200] or "sem resposta") + "."
     elif status in (401, 404) and not token:
         base["error"] = "Repositório privado: informe um token do GitHub (somente leitura) para checar atualizações."
     elif status in (401, 404):
