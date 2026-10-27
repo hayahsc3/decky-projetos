@@ -52,6 +52,12 @@ Arquivo: `~/homebrew/settings/SaveBackupSD/settings.json` (criado ao mudar o con
 - `destination`: caminho de uma pasta para usar no lugar do microSD detectado (ex.: um HD externo montado).
 - `custom_paths`: por `appid`, pastas adicionais (devem ficar dentro de `/home/deck` para poderem ser restauradas).
 
+## Versão e avisos de atualização
+
+O painel mostra a versão instalada. A cada abertura do Decky (e a cada 6 horas) o plugin consulta as **Releases** do repositório e, se houver versão mais nova, mostra uma notificação e um aviso no painel (o botão **Verificar atualizações** força a checagem). Cada alteração enviada ao repositório gera uma release nova automaticamente (veja abaixo), então basta instalar o zip novo por cima.
+
+Se o repositório for **privado**, o plugin pede um token do GitHub (fine-grained, só leitura de *Contents* e *Metadata* nesse repositório). Ele fica salvo em `settings.json` no Deck. Em repositório público não precisa de token.
+
 ## Compilar e gerar o ZIP instalável
 
 Precisa de Node.js 18+ (no PC, ou no Deck em modo desktop).

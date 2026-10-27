@@ -1,14 +1,22 @@
 name: Release SaveBackupSD
 
-# Publica o zip instalável em Releases ao criar uma tag como: save-backup-sd-v1.0.0
+# Cada alteração em save-backup-sd/ gera uma release nova com o zip instalável.
+# Versão = MAJOR.MINOR do package.json + número da execução (ex.: 1.1.7).
+# Para subir MAJOR/MINOR, edite "version" em save-backup-sd/package.json.
 on:
   push:
-    tags:
-      - "save-backup-sd-v*"
+    branches: [main]
+    paths:
+      - "save-backup-sd/**"
+      - ".github/workflows/release-save-backup-sd.yml"
   workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-save-backup-sd
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -23,30 +31,31 @@ jobs:
         with:
           node-version: 22
 
+      - name: Definir versão
+        id: ver
+        run: |
+          BASE=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
+          VERSION="${BASE}.${GITHUB_RUN_NUMBER}"
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));p.version='${VERSION}';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
       - name: Instalar dependências
         run: npm install --no-audit --no-fund
 
       - name: Build e empacotar
         run: npm run zip
 
-      - name: Nomear o zip com a versão
-        id: pkg
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          cp SaveBackupSD.zip "SaveBackupSD-v${VERSION}.zip"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
       - name: Publicar release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="save-backup-sd-v${{ steps.pkg.outputs.version }}"
-          FILE="SaveBackupSD-v${{ steps.pkg.outputs.version }}.zip"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$FILE" --clobber
-          else
-            gh release create "$TAG" "$FILE" \
-              --title "SaveBackupSD v${{ steps.pkg.outputs.version }}" \
-              --notes "Zip instalável do plugin. No Decky: Configurações → Desenvolvedor → instalar plugin a partir de ZIP." \
-              --target "${{ github.sha }}"
-          fi
+          VERSION="${{ steps.ver.outputs.version }}"
+          TAG="save-backup-sd-v${VERSION}"
+          FILE="SaveBackupSD-v${VERSION}.zip"
+          cp SaveBackupSD.zip "$FILE"
+          git log -1 --format=%B > ../notes.txt
+          printf '\nInstalar: Decky → Configurações → Desenvolvedor → instalar plugin a partir de ZIP.\n' >> ../notes.txt
+          gh release create "$TAG" "$FILE" \
+            --title "SaveBackupSD v${VERSION}" \
+            --notes-file ../notes.txt \
+            --target "${{ github.sha }}"

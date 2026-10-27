@@ -71,6 +71,16 @@ interface Backup {
   pre_restore: boolean;
 }
 
+interface UpdateStatus {
+  current: string;
+  latest: string;
+  available: boolean;
+  url: string;
+  error: string;
+  has_token: boolean;
+  notified: boolean;
+}
+
 interface OpResult {
   ok: boolean;
   message: string;
@@ -85,6 +95,9 @@ const backupAllCall = callable<[], OpResult>("backup_all");
 const restoreGameCall = callable<[appid: number, filename: string], OpResult>("restore_game");
 const deleteBackupCall = callable<[appid: number, filename: string], OpResult>("delete_backup");
 const setAutoBackupCall = callable<[enabled: boolean], { auto_backup: boolean }>("set_auto_backup");
+const updateStatusCall = callable<[force: boolean], UpdateStatus>("get_update_status");
+const ackUpdateCall = callable<[version: string], boolean>("ack_update");
+const setTokenCall = callable<[token: string], boolean>("set_github_token");
 const mountSdCall = callable<[], OpResult>("mount_sd");
 const setAutoMountCall = callable<[enabled: boolean], { auto_mount: boolean }>("set_auto_mount");
 const setMaxBackupsCall = callable<[value: number], { max_backups: number }>("set_max_backups");
@@ -256,6 +269,9 @@ const Content: FC = () => {
   const [autoBackup, setAutoBackup] = useState(false);
   const [autoMount, setAutoMount] = useState(true);
   const [mounting, setMounting] = useState(false);
+  const [upd, setUpd] = useState<UpdateStatus | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [token, setToken] = useState("");
   const saveTimer = useRef<number | undefined>(undefined);
 
   const refresh = useCallback(async () => {
@@ -277,6 +293,40 @@ const Content: FC = () => {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    updateStatusCall(false).then(setUpd).catch(() => undefined);
+  }, []);
+
+  const checkUpdates = async () => {
+    setChecking(true);
+    try {
+      const r = await updateStatusCall(true);
+      setUpd(r);
+      toaster.toast({
+        title: "SaveBackupSD",
+        body: r.error
+          ? r.error
+          : r.available
+            ? `Atualização disponível: v${r.current} → v${r.latest}`
+            : `Você está na versão mais recente (v${r.current}).`,
+      });
+    } catch (e) {
+      toaster.toast({ title: "SaveBackupSD", body: `Erro: ${errText(e)}` });
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const saveToken = async () => {
+    try {
+      await setTokenCall(token);
+      setToken("");
+      await checkUpdates();
+    } catch (e) {
+      toaster.toast({ title: "SaveBackupSD", body: `Erro: ${errText(e)}` });
+    }
+  };
 
   useEffect(() => {
     const listener = addEventListener<[done: number, total: number, name: string]>(
@@ -361,6 +411,28 @@ const Content: FC = () => {
 
   return (
     <>
+      <PanelSection title="Versão">
+        <PanelSectionRow>
+          <Field
+            label={`SaveBackupSD v${upd?.current ?? "…"}`}
+            description={
+              !upd
+                ? "Verificando atualizações…"
+                : upd.error
+                  ? upd.error
+                  : upd.available
+                    ? `Atualização disponível: v${upd.latest}. Baixe o zip em Releases no GitHub e instale pelo Decky.`
+                    : "Você está na versão mais recente."
+            }
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" disabled={checking} onClick={() => void checkUpdates()}>
+            {checking ? "Verificando…" : "Verificar atualizações"}
+          </ButtonItem>
+        </PanelSectionRow>
+      </PanelSection>
+
       <PanelSection title="MicroSD">
         <PanelSectionRow>
           {data?.sd ? (
@@ -471,6 +543,24 @@ const Content: FC = () => {
         )}
       </PanelSection>
 
+      {upd?.error && upd.error.includes("token") && (
+        <PanelSection title="Token do GitHub">
+          <PanelSectionRow>
+            <TextField
+              label={upd.has_token ? "Novo token (já existe um salvo)" : "Token (somente leitura)"}
+              bIsPassword
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" disabled={!token.trim() || checking} onClick={() => void saveToken()}>
+              Salvar token e verificar
+            </ButtonItem>
+          </PanelSectionRow>
+        </PanelSection>
+      )}
+
       {data && data.orphans.length > 0 && (
         <PanelSection title="Backups de jogos não instalados">
           <PanelSectionRow>
@@ -490,7 +580,28 @@ const Content: FC = () => {
   );
 };
 
+const UPDATE_CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
+
+const notifyIfUpdate = async () => {
+  try {
+    const r = await updateStatusCall(false);
+    if (r.available && !r.notified) {
+      toaster.toast({
+        title: "SaveBackupSD: atualização disponível",
+        body: `v${r.current} → v${r.latest}. Baixe o zip em Releases no GitHub.`,
+        duration: 10000,
+      });
+      await ackUpdateCall(r.latest);
+    }
+  } catch {
+    // sem internet / backend indisponível: tenta de novo no próximo ciclo
+  }
+};
+
 export default definePlugin(() => {
+  const firstCheck = window.setTimeout(() => void notifyIfUpdate(), 20000);
+  const periodic = window.setInterval(() => void notifyIfUpdate(), UPDATE_CHECK_EVERY_MS);
+
   // Escuta fora do painel para avisar mesmo com o menu rápido fechado.
   const autoListener = addEventListener<[appid: number, name: string, ok: boolean, message: string]>(
     "auto_backup",
@@ -507,6 +618,8 @@ export default definePlugin(() => {
     content: <Content />,
     icon: <FaSdCard />,
     onDismount() {
+      window.clearTimeout(firstCheck);
+      window.clearInterval(periodic);
       removeEventListener("auto_backup", autoListener);
     },
   };

@@ -24,6 +24,8 @@ import struct
 import subprocess
 import tarfile
 import time
+import urllib.error
+import urllib.request
 import zlib
 from datetime import datetime
 from pathlib import Path
@@ -61,7 +63,12 @@ EXCLUDE_REL_PATHS = {
     "appdata/local/packages",
 }
 
-DEFAULT_SETTINGS: Dict[str, Any] = {"max_backups": 5, "destination": "", "custom_paths": {}, "auto_backup": False, "auto_mount": True}
+DEFAULT_SETTINGS: Dict[str, Any] = {"max_backups": 5, "destination": "", "custom_paths": {}, "auto_backup": False, "auto_mount": True,
+    "update_repo": "hayahsc3/decky-projetos", "github_token": "", "notified_version": "",
+}
+
+UPDATE_TAG_PREFIX = "save-backup-sd-v"
+UPDATE_CACHE_TTL = 600.0
 
 WATCH_INTERVAL = 5.0   # segundos entre verificações de jogos em execução
 AUTO_DELAY = 6.0       # espera após o jogo fechar (deixa o jogo/Steam terminarem de gravar)
@@ -164,7 +171,8 @@ def _settings_path() -> Path:
 
 
 def load_settings() -> Dict[str, Any]:
-    s: Dict[str, Any] = {"max_backups": DEFAULT_SETTINGS["max_backups"], "destination": "", "custom_paths": {}, "auto_backup": False, "auto_mount": True}
+    s: Dict[str, Any] = {"max_backups": DEFAULT_SETTINGS["max_backups"], "destination": "", "custom_paths": {}, "auto_backup": False, "auto_mount": True,
+         "update_repo": DEFAULT_SETTINGS["update_repo"], "github_token": "", "notified_version": ""}
     try:
         raw = json.loads(_settings_path().read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -176,6 +184,10 @@ def load_settings() -> Dict[str, Any]:
         mb = raw.get("max_backups")
         if isinstance(mb, int) and 1 <= mb <= 50:
             s["max_backups"] = mb
+        for key in ("update_repo", "github_token", "notified_version"):
+            val = raw.get(key)
+            if isinstance(val, str) and (val.strip() or key != "update_repo"):
+                s[key] = val.strip()
         am = raw.get("auto_mount")
         if isinstance(am, bool):
             s["auto_mount"] = am
@@ -1196,6 +1208,95 @@ def _scan() -> Dict[str, Any]:
 # API exposta ao frontend
 # --------------------------------------------------------------------------
 
+# ---------------------------------------------------------------- atualizações
+
+_update_cache: Dict[str, Any] = {"ts": 0.0, "data": None}
+
+
+def current_version() -> str:
+    try:
+        data = json.loads((Path(decky.DECKY_PLUGIN_DIR) / "package.json").read_text(encoding="utf-8"))
+        return str(data.get("version") or "0.0.0")
+    except (OSError, ValueError, AttributeError):
+        return "0.0.0"
+
+
+def parse_version(v: str) -> Tuple[int, ...]:
+    nums = [int(x) for x in re.findall(r"\d+", v)][:4]
+    return tuple(nums + [0] * (3 - len(nums)))
+
+
+def pick_latest(releases: Any) -> Optional[Dict[str, Any]]:
+    best: Optional[Dict[str, Any]] = None
+    best_v: Tuple[int, ...] = ()
+    if not isinstance(releases, list):
+        return None
+    for r in releases:
+        if not isinstance(r, dict) or r.get("draft") or r.get("prerelease"):
+            continue
+        tag = str(r.get("tag_name", ""))
+        if not tag.startswith(UPDATE_TAG_PREFIX):
+            continue
+        ver = parse_version(tag[len(UPDATE_TAG_PREFIX):])
+        if best is None or ver > best_v:
+            best, best_v = r, ver
+    return best
+
+
+def _http_json(url: str, token: str) -> Tuple[int, Any]:
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "SaveBackupSD-updater",
+               "X-GitHub-Api-Version": "2022-11-28"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        return 0, None
+
+
+def check_update(force: bool = False) -> Dict[str, Any]:
+    settings = load_settings()
+    cur = current_version()
+    token = settings["github_token"]
+    base: Dict[str, Any] = {"current": cur, "latest": cur, "available": False, "url": "",
+                            "error": "", "has_token": bool(token), "notified": False}
+    now = time.time()
+    cached = _update_cache["data"]
+    if not force and cached and now - _update_cache["ts"] < UPDATE_CACHE_TTL and cached.get("current") == cur:
+        out = dict(cached)
+        out["has_token"] = bool(token)
+        out["notified"] = bool(out["available"] and settings["notified_version"] == out["latest"])
+        return out
+
+    repo = settings["update_repo"]
+    status, data = _http_json(f"https://api.github.com/repos/{repo}/releases?per_page=30", token)
+    if status == 200:
+        rel = pick_latest(data)
+        if rel:
+            latest = str(rel["tag_name"])[len(UPDATE_TAG_PREFIX):]
+            base["latest"] = latest
+            base["url"] = str(rel.get("html_url", ""))
+            base["available"] = parse_version(latest) > parse_version(cur)
+    elif status == 0:
+        base["error"] = "Sem conexão com a internet."
+    elif status in (401, 404) and not token:
+        base["error"] = "Repositório privado: informe um token do GitHub (somente leitura) para checar atualizações."
+    elif status in (401, 404):
+        base["error"] = "Token inválido ou sem acesso ao repositório."
+    elif status == 403:
+        base["error"] = "Limite de requisições do GitHub atingido. Tente mais tarde."
+    else:
+        base["error"] = f"GitHub respondeu com erro {status}."
+    if not base["error"]:
+        _update_cache["ts"], _update_cache["data"] = now, dict(base)
+    base["notified"] = bool(base["available"] and settings["notified_version"] == base["latest"])
+    return base
+
+
 _watch_task: Optional["asyncio.Task[None]"] = None
 _auto_inflight: set = set()
 
@@ -1289,6 +1390,23 @@ class Plugin:
         settings["max_backups"] = max(1, min(50, int(value)))
         await _run(save_settings, settings)
         return {"max_backups": settings["max_backups"], "destination": settings["destination"]}
+
+    async def get_update_status(self, force: bool = False) -> Dict[str, Any]:
+        return await _run(check_update, bool(force))
+
+    async def ack_update(self, version: str) -> bool:
+        settings = load_settings()
+        settings["notified_version"] = str(version)
+        await _run(save_settings, settings)
+        return True
+
+    async def set_github_token(self, token: str) -> bool:
+        settings = load_settings()
+        settings["github_token"] = str(token).strip()
+        settings["notified_version"] = ""
+        _update_cache["data"] = None
+        await _run(save_settings, settings)
+        return True
 
     async def mount_sd(self) -> Dict[str, Any]:
         async with _get_lock():
