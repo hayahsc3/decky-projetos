@@ -61,7 +61,7 @@ interface ScanResult {
   steam_found: boolean;
   games: Game[];
   orphans: Orphan[];
-  settings: { max_backups: number; destination: string; auto_backup: boolean };
+  settings: { max_backups: number; destination: string; auto_backup: boolean; auto_mount: boolean };
 }
 
 interface Backup {
@@ -85,6 +85,8 @@ const backupAllCall = callable<[], OpResult>("backup_all");
 const restoreGameCall = callable<[appid: number, filename: string], OpResult>("restore_game");
 const deleteBackupCall = callable<[appid: number, filename: string], OpResult>("delete_backup");
 const setAutoBackupCall = callable<[enabled: boolean], { auto_backup: boolean }>("set_auto_backup");
+const mountSdCall = callable<[], OpResult>("mount_sd");
+const setAutoMountCall = callable<[enabled: boolean], { auto_mount: boolean }>("set_auto_mount");
 const setMaxBackupsCall = callable<[value: number], { max_backups: number }>("set_max_backups");
 
 // ---------------------------------------------------------------- helpers
@@ -252,6 +254,8 @@ const Content: FC = () => {
   const [progress, setProgress] = useState("");
   const [maxBackups, setMaxBackups] = useState(5);
   const [autoBackup, setAutoBackup] = useState(false);
+  const [autoMount, setAutoMount] = useState(true);
+  const [mounting, setMounting] = useState(false);
   const saveTimer = useRef<number | undefined>(undefined);
 
   const refresh = useCallback(async () => {
@@ -262,6 +266,7 @@ const Content: FC = () => {
       setData(r);
       setMaxBackups(r.settings.max_backups);
       setAutoBackup(r.settings.auto_backup);
+      setAutoMount(r.settings.auto_mount);
     } catch (e) {
       setError(errText(e));
     } finally {
@@ -303,6 +308,27 @@ const Content: FC = () => {
       setProgress("");
       void refresh();
     }
+  };
+
+  const mountNow = async () => {
+    setMounting(true);
+    try {
+      const r = await mountSdCall();
+      toaster.toast({ title: "microSD", body: r.message });
+    } catch (e) {
+      toaster.toast({ title: "microSD", body: `Erro: ${errText(e)}` });
+    } finally {
+      setMounting(false);
+      void refresh();
+    }
+  };
+
+  const onAutoMount = (v: boolean) => {
+    setAutoMount(v);
+    setAutoMountCall(v).catch((e: unknown) => {
+      setAutoMount(!v);
+      toaster.toast({ title: "Montagem automática", body: `Erro: ${errText(e)}` });
+    });
   };
 
   const onAutoBackup = (v: boolean) => {
@@ -353,9 +379,24 @@ const Content: FC = () => {
           )}
         </PanelSectionRow>
         <PanelSectionRow>
-          <ButtonItem layout="below" disabled={loading || busyAll} onClick={() => void refresh()}>
+          <ButtonItem layout="below" disabled={loading || busyAll || mounting} onClick={() => void refresh()}>
             {loading ? "Atualizando…" : "Atualizar"}
           </ButtonItem>
+        </PanelSectionRow>
+        {data && !data.sd && (
+          <PanelSectionRow>
+            <ButtonItem layout="below" disabled={mounting || loading} onClick={() => void mountNow()}>
+              {mounting ? "Montando…" : "Montar microSD"}
+            </ButtonItem>
+          </PanelSectionRow>
+        )}
+        <PanelSectionRow>
+          <ToggleField
+            label="Montar microSD automaticamente"
+            description="Se o cartão estiver inserido mas desmontado, o plugin monta sozinho"
+            checked={autoMount}
+            onChange={onAutoMount}
+          />
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem

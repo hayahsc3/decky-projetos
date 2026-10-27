@@ -21,6 +21,7 @@ import re
 import shutil
 import stat
 import struct
+import subprocess
 import tarfile
 import time
 import zlib
@@ -60,7 +61,7 @@ EXCLUDE_REL_PATHS = {
     "appdata/local/packages",
 }
 
-DEFAULT_SETTINGS: Dict[str, Any] = {"max_backups": 5, "destination": "", "custom_paths": {}, "auto_backup": False}
+DEFAULT_SETTINGS: Dict[str, Any] = {"max_backups": 5, "destination": "", "custom_paths": {}, "auto_backup": False, "auto_mount": True}
 
 WATCH_INTERVAL = 5.0   # segundos entre verificações de jogos em execução
 AUTO_DELAY = 6.0       # espera após o jogo fechar (deixa o jogo/Steam terminarem de gravar)
@@ -163,7 +164,7 @@ def _settings_path() -> Path:
 
 
 def load_settings() -> Dict[str, Any]:
-    s: Dict[str, Any] = {"max_backups": DEFAULT_SETTINGS["max_backups"], "destination": "", "custom_paths": {}, "auto_backup": False}
+    s: Dict[str, Any] = {"max_backups": DEFAULT_SETTINGS["max_backups"], "destination": "", "custom_paths": {}, "auto_backup": False, "auto_mount": True}
     try:
         raw = json.loads(_settings_path().read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -175,6 +176,9 @@ def load_settings() -> Dict[str, Any]:
         mb = raw.get("max_backups")
         if isinstance(mb, int) and 1 <= mb <= 50:
             s["max_backups"] = mb
+        am = raw.get("auto_mount")
+        if isinstance(am, bool):
+            s["auto_mount"] = am
         ab = raw.get("auto_backup")
         if isinstance(ab, bool):
             s["auto_backup"] = ab
@@ -479,12 +483,184 @@ def _describe_mount(mount: str, device: str = "", fs: str = "", custom: bool = F
     }
 
 
+SYSTEM_MOUNT_PREFIXES = ("/home", "/var", "/boot", "/efi", "/etc", "/usr", "/opt", "/srv", "/sysroot")
+SKIP_FSTYPES = {"swap", "crypto_LUKS", "LVM2_member", "linux_raid_member", "iso9660", "squashfs", "vfat_esp"}
+MOUNT_RETRY_COOLDOWN = 20.0
+AUTOMOUNT_SCRIPT = "/usr/lib/hwsupport/steamos-automount.sh"
+
+_mount_fail_ts = 0.0
+_mount_fail_msg = ""
+
+
+def _run_cmd(args: List[str], timeout: float = 25.0) -> Tuple[int, str]:
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, ((p.stdout or "") + (p.stderr or "")).strip()
+    except FileNotFoundError:
+        return 127, f"comando não encontrado: {args[0]}"
+    except subprocess.TimeoutExpired:
+        return 124, "tempo esgotado"
+    except OSError as e:
+        return 126, str(e)
+
+
+def _truthy(v: Any) -> bool:
+    return v is True or str(v).lower() in ("1", "true")
+
+
+def _is_system_mount(mp: str) -> bool:
+    return mp == "/" or any(mp == p or mp.startswith(p + "/") for p in SYSTEM_MOUNT_PREFIXES)
+
+
+def parse_lsblk(text: str) -> List[Dict[str, Any]]:
+    """Interpreta `lsblk -J` e devolve sistemas de arquivos candidatos a cartão/mídia removível."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return []
+    out: List[Dict[str, Any]] = []
+
+    def collect(node: Dict[str, Any], acc: List[Dict[str, Any]]) -> None:
+        acc.append(node)
+        for c in node.get("children") or []:
+            collect(c, acc)
+
+    for top in data.get("blockdevices") or []:
+        nodes: List[Dict[str, Any]] = []
+        collect(top, nodes)
+        name = str(top.get("name", ""))
+        removable = _truthy(top.get("rm")) or name.startswith("mmcblk")
+        if not removable:
+            continue
+        mps = [str(n.get("mountpoint") or "") for n in nodes]
+        if any(mp and _is_system_mount(mp) for mp in mps):
+            continue  # disco do sistema (ex.: eMMC interna): nunca mexer
+        for n in nodes:
+            fs = str(n.get("fstype") or "")
+            if not fs or fs in SKIP_FSTYPES or n.get("type") not in ("part", "disk"):
+                continue
+            if n.get("type") == "disk" and n.get("children"):
+                continue
+            mp = str(n.get("mountpoint") or "")
+            if mp and mp != "/" and not mp.startswith(("/run/media", "/media", "/mnt")):
+                continue
+            try:
+                size = int(n.get("size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            out.append({
+                "name": str(n.get("name", "")),
+                "path": str(n.get("path") or f"/dev/{n.get('name', '')}"),
+                "fstype": fs,
+                "label": str(n.get("label") or ""),
+                "mountpoint": mp,
+                "size": size,
+            })
+    return out
+
+
+def list_removable() -> List[Dict[str, Any]]:
+    rc, out = _run_cmd(["lsblk", "-J", "-b", "-o", "NAME,PATH,FSTYPE,LABEL,MOUNTPOINT,RM,TYPE,SIZE"], 10)
+    return parse_lsblk(out) if rc == 0 else []
+
+
 def find_sd_mounts() -> List[Dict[str, Any]]:
+    result: List[Dict[str, Any]] = []
+    seen = set()
     try:
         text = Path("/proc/mounts").read_text(encoding="utf-8", errors="ignore")
+        for m in parse_mounts(text):
+            result.append(_describe_mount(m["mount"], m["device"], m["fs"]))
+            seen.add(m["mount"])
     except OSError:
-        return []
-    return [_describe_mount(m["mount"], m["device"], m["fs"]) for m in parse_mounts(text)]
+        pass
+    # mídias removíveis montadas que não são mmcblk (ex.: leitor de cartão via USB)
+    for c in list_removable():
+        mp = c["mountpoint"]
+        if mp and mp not in seen and mp != "/":
+            result.append(_describe_mount(mp, c["path"], c["fstype"]))
+            seen.add(mp)
+    return result
+
+
+def _mount_dir_for(c: Dict[str, Any]) -> Path:
+    user = getattr(decky, "DECKY_USER", "deck") or "deck"
+    name = re.sub(r"[^\w.-]+", "_", c["label"] or c["name"]) or c["name"]
+    return Path("/run/media") / user / name
+
+
+def _mount_one(c: Dict[str, Any]) -> Tuple[bool, str]:
+    """Tenta montar uma partição; devolve (ok, detalhe)."""
+    dev, name = c["path"], c["name"]
+    errors: List[str] = []
+    is_root = os.geteuid() == 0
+
+    if is_root and os.path.exists(AUTOMOUNT_SCRIPT):
+        rc, out = _run_cmd(["/bin/bash", AUTOMOUNT_SCRIPT, "add", name], 40)
+        if rc == 0 and _find_mountpoint(dev):
+            return True, "montado"
+        errors.append(f"steamos-automount: {out or rc}")
+
+    rc, out = _run_cmd(["udisksctl", "mount", "-b", dev, "--no-user-interaction"], 40)
+    if rc == 0 or "already mounted" in out.lower():
+        return True, "montado"
+    errors.append(f"udisksctl: {out or rc}")
+
+    if is_root:
+        target = _mount_dir_for(c)
+        opts = ["-o", "nosuid,nodev,noexec"]
+        fs = c["fstype"]
+        ids = _owner_ids()
+        if fs in ("vfat", "exfat", "ntfs", "ntfs3") and ids:
+            opts = ["-o", f"nosuid,nodev,noexec,uid={ids[0]},gid={ids[1]},umask=0022"]
+        try:
+            _makedirs(target, Path("/run/media"))
+        except OSError as e:
+            errors.append(f"mkdir: {e}")
+        else:
+            rc, out = _run_cmd(["mount", *opts, dev, str(target)], 40)
+            if rc == 0:
+                return True, "montado"
+            errors.append(f"mount: {out or rc}")
+            try:
+                target.rmdir()
+            except OSError:
+                pass
+    return False, "; ".join(errors)
+
+
+def _find_mountpoint(dev: str) -> str:
+    try:
+        for line in Path("/proc/mounts").read_text(encoding="utf-8", errors="ignore").splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] == dev:
+                return _unescape_mount(parts[1])
+    except OSError:
+        pass
+    return ""
+
+
+def mount_sd(force: bool = False) -> Tuple[bool, str]:
+    """Monta o(s) cartão(ões) removível(is) ainda não montados. Respeita um intervalo entre falhas."""
+    global _mount_fail_ts, _mount_fail_msg
+    if not force and _mount_fail_ts and time.time() - _mount_fail_ts < MOUNT_RETRY_COOLDOWN:
+        return False, _mount_fail_msg
+    pending = [c for c in list_removable() if not c["mountpoint"]]
+    if not pending:
+        return False, "Nenhum cartão desmontado foi encontrado."
+    # prefere os mmcblk (microSD)
+    pending.sort(key=lambda c: (not c["name"].startswith("mmcblk"), c["name"]))
+    last = ""
+    for c in pending:
+        ok, detail = _mount_one(c)
+        if ok:
+            _mount_fail_ts, _mount_fail_msg = 0.0, ""
+            decky.logger.info(f"microSD montado: {c['path']}")
+            return True, f"Montado: {c['label'] or c['name']}"
+        last = f"{c['path']}: {detail}"
+        decky.logger.warning(f"falha ao montar {last}")
+    _mount_fail_ts, _mount_fail_msg = time.time(), f"Não foi possível montar o cartão ({last})"
+    return False, _mount_fail_msg
 
 
 def get_destination(settings: Dict[str, Any]) -> Tuple[Optional[Path], str, Optional[Dict[str, Any]]]:
@@ -495,12 +671,24 @@ def get_destination(settings: Dict[str, Any]) -> Tuple[Optional[Path], str, Opti
             return p, "", _describe_mount(str(p), custom=True)
         return None, f"Destino personalizado indisponível: {custom}", None
     sds = find_sd_mounts()
+    mount_err = ""
+    if not any(sd["writable"] for sd in sds) and settings.get("auto_mount", True):
+        ok, msg = mount_sd()
+        if ok:
+            sds = find_sd_mounts()
+        elif list_removable_unmounted_hint(msg):
+            mount_err = msg
     for sd in sds:
         if sd["writable"]:
             return Path(sd["mount"]), "", sd
     if sds:
         return None, "O microSD está montado, mas sem permissão de escrita.", sds[0]
-    return None, "microSD não encontrado. Insira o cartão e atualize.", None
+    return None, mount_err or "microSD não encontrado. Insira o cartão e atualize.", None
+
+
+def list_removable_unmounted_hint(msg: str) -> bool:
+    """Só mostra a mensagem de falha de montagem quando havia mesmo um cartão para montar."""
+    return msg.startswith("Não foi possível montar")
 
 
 # --------------------------------------------------------------------------
@@ -1000,7 +1188,7 @@ def _scan() -> Dict[str, Any]:
         "games": out_games,
         "orphans": orphans,
         "settings": {"max_backups": settings["max_backups"], "destination": settings["destination"],
-                     "auto_backup": settings["auto_backup"]},
+                     "auto_backup": settings["auto_backup"], "auto_mount": settings["auto_mount"]},
     }
 
 
@@ -1101,6 +1289,21 @@ class Plugin:
         settings["max_backups"] = max(1, min(50, int(value)))
         await _run(save_settings, settings)
         return {"max_backups": settings["max_backups"], "destination": settings["destination"]}
+
+    async def mount_sd(self) -> Dict[str, Any]:
+        async with _get_lock():
+            ok, msg = await _run(mount_sd, True)
+            if not ok and msg.startswith("Nenhum cartão desmontado"):
+                found = await _run(find_sd_mounts)
+                if found:
+                    return _res(True, "O microSD já está montado.")
+            return _res(ok, msg)
+
+    async def set_auto_mount(self, enabled: bool) -> Dict[str, Any]:
+        settings = load_settings()
+        settings["auto_mount"] = bool(enabled)
+        await _run(save_settings, settings)
+        return {"auto_mount": settings["auto_mount"]}
 
     async def set_auto_backup(self, enabled: bool) -> Dict[str, Any]:
         settings = load_settings()

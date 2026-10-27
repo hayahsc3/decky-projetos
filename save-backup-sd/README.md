@@ -5,7 +5,7 @@ Lista seus jogos instalados (Steam e atalhos não-Steam), faz backup dos saves p
 ## Como usar
 
 1. Abra o menu rápido (botão `...`) → ícone do plugin **Save Backup SD**.
-2. O topo mostra o microSD detectado e o espaço livre.
+2. O topo mostra o microSD detectado e o espaço livre. Se o cartão estiver inserido mas **desmontado**, o plugin monta sozinho (chave “Montar microSD automaticamente”); também há o botão **Montar microSD**. A montagem automática vale para o backup automático e para as demais operações.
 3. Toque num jogo → **Fazer backup agora**. Ou use **Backup de todos os jogos**.
 4. Para restaurar: toque no jogo → escolha o backup → **Restaurar**.
    - Antes de sobrescrever, o plugin guarda um backup de segurança do estado atual (`pre-restore_…`).
@@ -42,6 +42,7 @@ Arquivo: `~/homebrew/settings/SaveBackupSD/settings.json` (criado ao mudar o con
   "max_backups": 5,
   "destination": "",
   "auto_backup": false,
+  "auto_mount": true,
   "custom_paths": {
     "1234567": ["/home/deck/.config/MeuJogo"]
   }
@@ -79,6 +80,8 @@ main.py            backend (Python): detecção de jogos, microSD, backup e rest
 src/index.tsx      interface (React + @decky/ui)
 scripts/make-zip.mjs   empacota o ZIP instalável
 ```
+
+O plugin usa a permissão `root` do Decky (`flags` no `plugin.json`) apenas para conseguir montar o cartão; os arquivos restaurados voltam a pertencer ao seu usuário.
 
 Logs do backend: `~/homebrew/logs/SaveBackupSD/`.
 
