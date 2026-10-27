@@ -411,28 +411,6 @@ const Content: FC = () => {
 
   return (
     <>
-      <PanelSection title="Versão">
-        <PanelSectionRow>
-          <Field
-            label={`SaveBackupSD v${upd?.current ?? "…"}`}
-            description={
-              !upd
-                ? "Verificando atualizações…"
-                : upd.error
-                  ? upd.error
-                  : upd.available
-                    ? `Atualização disponível: v${upd.latest}. Baixe o zip em Releases no GitHub e instale pelo Decky.`
-                    : "Você está na versão mais recente."
-            }
-          />
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" disabled={checking} onClick={() => void checkUpdates()}>
-            {checking ? "Verificando…" : "Verificar atualizações"}
-          </ButtonItem>
-        </PanelSectionRow>
-      </PanelSection>
-
       <PanelSection title="MicroSD">
         <PanelSectionRow>
           {data?.sd ? (
@@ -576,6 +554,28 @@ const Content: FC = () => {
           ))}
         </PanelSection>
       )}
+
+      <PanelSection title="Versão">
+        <PanelSectionRow>
+          <Field
+            label={`SaveBackupSD v${upd?.current ?? "…"}`}
+            description={
+              !upd
+                ? "Verificando atualizações…"
+                : upd.error
+                  ? upd.error
+                  : upd.available
+                    ? `Atualização disponível: v${upd.latest}. Baixe o zip em Releases no GitHub e instale pelo Decky.`
+                    : "Você está na versão mais recente."
+            }
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" disabled={checking} onClick={() => void checkUpdates()}>
+            {checking ? "Verificando…" : "Verificar atualizações"}
+          </ButtonItem>
+        </PanelSectionRow>
+      </PanelSection>
     </>
   );
 };
