@@ -4,5 +4,4 @@ Meus projetos (plugins Decky Loader para Steam Deck e outros). Uma pasta por pro
 
 | Pasta | Descrição |
 |---|---|
-| `cheatdeck-plus/` | Substituto do CheatDeck: executa trainers FLiNG no prefixo Proton do jogo |
 | `save-backup-sd/` | Backup e restauração de saves para o microSD, com backup automático ao fechar o jogo |
