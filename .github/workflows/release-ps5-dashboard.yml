@@ -1,0 +1,75 @@
+name: Release PS5 Dashboard
+
+# Cada alteração em ps5-dashboard/ compila o plugin e publica uma release com o zip instalável.
+# A versão vem de "version" em ps5-dashboard/package.json (e precisa bater com VERSION em
+# ps5-dashboard/src/index.tsx; o script de empacotamento recusa se forem diferentes).
+# Se já existir release dessa versão, nada é publicado: suba a versão para lançar uma nova.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ps5-dashboard/**"
+      - ".github/workflows/release-ps5-dashboard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-ps5-dashboard
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ps5-dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Definir versão
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          if gh release view "ps5-dashboard-v${VERSION}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "A release ps5-dashboard-v${VERSION} já existe; nada a publicar."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Instalar dependências
+        if: steps.ver.outputs.exists == 'false'
+        run: npm ci --no-audit --no-fund
+
+      - name: Verificar tipos, compilar e empacotar
+        if: steps.ver.outputs.exists == 'false'
+        run: |
+          npm run typecheck
+          bash scripts/package.sh
+
+      - name: Publicar release
+        if: steps.ver.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          TAG="ps5-dashboard-v${VERSION}"
+          FILE="PS5Dashboard-v${VERSION}.zip"
+          cp ps5-dashboard.zip "$FILE"
+          {
+            awk -v v="${VERSION}" '$0 ~ "^## " v {f=1; next} f && /^## / {exit} f' CHANGELOG.md
+            printf '\nInstalar: Decky → Configurações → Desenvolvedor → instalar plugin a partir de ZIP.\n'
+          } > ../notes.txt
+          gh release create "$TAG" "$FILE" \
+            --title "PS5 Dashboard v${VERSION}" \
+            --notes-file ../notes.txt \
+            --target "${{ github.sha }}"
