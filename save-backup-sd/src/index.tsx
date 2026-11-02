@@ -90,6 +90,7 @@ interface OpResult {
 // ------------------------------------------------------- backend (main.py)
 
 const scanCall = callable<[], ScanResult>("scan");
+const getGameArtCall = callable<[appid: number], string>("get_game_art");
 const listBackupsCall = callable<[appid: number], Backup[]>("list_backups");
 const backupGameCall = callable<[appid: number], OpResult>("backup_game");
 const backupAllCall = callable<[], OpResult>("backup_all");
@@ -258,6 +259,43 @@ const GameModal: FC<GameModalProps> = ({ game, sdOk, onChanged, closeModal }) =>
 // ------------------------------------------------------------- painel
 
 const PAGE_SIZE = 60;
+interface GameCardProps {
+  game: Game;
+  onOpen: () => void;
+}
+
+const GameCard: FC<GameCardProps> = ({ game, onOpen }) => {
+  const [art, setArt] = useState("");
+  useEffect(() => {
+    let active = true;
+    getGameArtCall(game.appid).then((url) => { if (active) setArt(url); }).catch(() => undefined);
+    return () => { active = false; };
+  }, [game.appid]);
+
+  return (
+    <Focusable onActivate={onOpen} style={{ minWidth: 0, width: "100%" }}>
+      <div onClick={onOpen} style={{ display: "flex", flexDirection: "column", gap: "7px", height: "100%", padding: "8px", borderRadius: "8px", background: "rgba(255,255,255,0.055)", cursor: "pointer", boxSizing: "border-box", minWidth: 0 }}>
+        <div style={{ width: "100%", aspectRatio: "2 / 3", overflow: "hidden", borderRadius: "5px", background: "rgba(0,0,0,0.28)" }}>
+          {art ? (
+            <img src={art} alt={game.name} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+          ) : (
+            <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.55)", fontSize: "12px", textAlign: "center", padding: "6px", boxSizing: "border-box" }}>
+              Arte indisponível
+            </div>
+          )}
+        </div>
+        <div style={{ fontSize: "13px", fontWeight: 600, lineHeight: "17px", minHeight: "34px", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", textAlign: "center" }}>
+          {game.name}
+        </div>
+        <div style={{ fontSize: "11px", lineHeight: "14px", opacity: 0.72, textAlign: "center" }}>
+          {game.backup_count > 0 ? `${game.backup_count} backup(s)` : game.has_data ? "Sem backup" : "Sem saves ainda"}
+          {game.kind === "nonsteam" ? " · não-Steam" : ""}
+        </div>
+      </div>
+    </Focusable>
+  );
+}
+
 
 const Content: FC = () => {
   const [data, setData] = useState<ScanResult | null>(null);
@@ -468,15 +506,13 @@ const Content: FC = () => {
               onChange={(e) => setFilter(e.target.value)}
             />
           </PanelSectionRow>
-          {visible.map((g) => (
-            <PanelSectionRow key={g.appid}>
-              <ButtonItem layout="below" onClick={() => openGame(g)} description={describeGame(g)}>
-                {g.backup_count > 0 ? "💾 " : ""}
-                {g.name}
-                {g.kind === "nonsteam" ? " (não-Steam)" : ""}
-              </ButtonItem>
-            </PanelSectionRow>
-          ))}
+          <PanelSectionRow>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(112px, 1fr))", gap: "12px", width: "100%" }}>
+              {visible.map((g) => (
+                <GameCard key={g.appid} game={g} onOpen={() => openGame(g)} />
+              ))}
+            </div>
+          </PanelSectionRow>
           {!showAll && !filter.trim() && filtered.length > PAGE_SIZE && (
             <PanelSectionRow>
               <ButtonItem layout="below" onClick={() => setShowAll(true)}>
