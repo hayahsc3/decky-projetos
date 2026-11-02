@@ -2,7 +2,7 @@ name: Build SaveBackupSD beta # gallery test
 
 on:
   push:
-    branches: [beta/save-backup-sd-gallery]
+    branches: [beta/save-backup-sd-gallery, beta/save-backup-sd-art-fix]
     paths:
       - "save-backup-sd/**"
       - ".github/workflows/build-save-backup-sd-beta.yml"
@@ -24,6 +24,8 @@ jobs:
           node-version: 22
       - name: Instalar dependências
         run: npm install --no-audit --no-fund
+      - name: Verificar sintaxe do backend
+        run: python -m py_compile main.py
       - name: Build e empacotar
         run: npm run zip
       - name: Publicar beta para teste manual
@@ -36,4 +38,4 @@ jobs:
           gh release create "save-backup-sd-v${VERSION}" "$FILE" \
             --title "SaveBackupSD v${VERSION} (Beta)" \
             --prerelease \
-            --notes "Beta de teste: galeria de jogos com capas locais. Esta versão é inferior à versão estável e não será oferecida pelo atualizador automático. Para voltar à estável, use o atualizador do plugin."
+            --notes "Beta de teste: galeria de jogos com busca ampliada de capas locais e diagnóstico. Esta versão é inferior à versão estável e não será oferecida pelo atualizador automático. Para voltar à estável, use o atualizador do plugin."
