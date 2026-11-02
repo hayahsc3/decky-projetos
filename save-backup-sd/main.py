@@ -22,6 +22,8 @@ import shutil
 import ssl
 import stat
 import struct
+import tempfile
+import zipfile
 import subprocess
 import tarfile
 import time
@@ -1318,7 +1320,7 @@ def check_update(force: bool = False) -> Dict[str, Any]:
     settings = load_settings()
     cur = current_version()
     token = settings["github_token"]
-    base: Dict[str, Any] = {"current": cur, "latest": cur, "available": False, "url": "",
+    base: Dict[str, Any] = {"current": cur, "latest": cur, "available": False, "url": "", "download_url": "",
                             "error": "", "has_token": bool(token), "notified": False}
     now = time.time()
     cached = _update_cache["data"]
@@ -1336,7 +1338,13 @@ def check_update(force: bool = False) -> Dict[str, Any]:
             latest = str(rel["tag_name"])[len(UPDATE_TAG_PREFIX):]
             base["latest"] = latest
             base["url"] = str(rel.get("html_url", ""))
-            base["available"] = parse_version(latest) > parse_version(cur)
+            assets = rel.get("assets") if isinstance(rel.get("assets"), list) else []
+            package_asset = next((a for a in assets if isinstance(a, dict)
+                                  and str(a.get("name", "")).startswith("SaveBackupSD-v")
+                                  and str(a.get("name", "")).endswith(".zip")
+                                  and a.get("browser_download_url")), None)
+            base["download_url"] = str(package_asset.get("browser_download_url", "")) if package_asset else ""
+            base["available"] = parse_version(latest) > parse_version(cur) and bool(base["download_url"])
     elif status == 0:
         base["error"] = "Não foi possível conectar ao GitHub: " + (detail[:200] or "sem resposta") + "."
     elif status in (401, 404) and not token:
@@ -1351,6 +1359,106 @@ def check_update(force: bool = False) -> Dict[str, Any]:
         _update_cache["ts"], _update_cache["data"] = now, dict(base)
     base["notified"] = bool(base["available"] and settings["notified_version"] == base["latest"])
     return base
+
+
+def _install_update(version: str) -> Dict[str, Any]:
+    """Baixa e instala uma Release oficial, preservando dados fora da pasta do plugin."""
+    status = check_update(True)
+    if status.get("error"):
+        return _res(False, status["error"])
+    if not status.get("available") or status.get("latest") != version:
+        return _res(False, "A atualização mudou. Verifique novamente antes de instalar.")
+    url = str(status.get("download_url") or "")
+    if not url.startswith("https://github.com/") or "/releases/download/" not in url:
+        return _res(False, "A Release não possui um pacote ZIP válido para instalação.")
+
+    plugin_dir = Path(decky.DECKY_PLUGIN_DIR).resolve()
+    parent = plugin_dir.parent
+    work_dir = Path(tempfile.mkdtemp(prefix=".savebackup-update-", dir=str(parent)))
+    archive = work_dir / "update.zip"
+    extracted = work_dir / "extracted"
+    backup_dir = parent / (plugin_dir.name + ".update-backup")
+    moved_old = False
+    try:
+        headers = {"User-Agent": "SaveBackupSD-updater", "Accept": "application/octet-stream"}
+        token = load_settings().get("github_token", "")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=120, context=_ssl_context()) as response:
+            total = 0
+            with archive.open("wb") as output:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > 50 * 1024 * 1024:
+                        raise ValueError("O pacote de atualização excede o limite de 50 MB.")
+                    output.write(chunk)
+
+        extracted.mkdir()
+        with zipfile.ZipFile(archive, "r") as package:
+            entries = package.infolist()
+            if not entries:
+                raise ValueError("O pacote de atualização está vazio.")
+            for entry in entries:
+                name = entry.filename.replace("\\", "/")
+                parts = Path(name).parts
+                mode = (entry.external_attr >> 16) & 0o170000
+                if name.startswith("/") or ".." in parts or not parts or parts[0] != "SaveBackupSD":
+                    raise ValueError("O pacote contém um caminho inválido.")
+                if mode == stat.S_IFLNK:
+                    raise ValueError("O pacote contém um link simbólico não permitido.")
+            bad = package.testzip()
+            if bad:
+                raise ValueError("O ZIP está corrompido.")
+            package.extractall(extracted)
+
+        new_plugin = extracted / "SaveBackupSD"
+        required = ("main.py", "package.json", "plugin.json", "dist/index.js")
+        if not new_plugin.is_dir() or any(not (new_plugin / item).is_file() for item in required):
+            raise ValueError("O pacote não contém os arquivos necessários do SaveBackupSD.")
+        package_version = json.loads((new_plugin / "package.json").read_text(encoding="utf-8")).get("version")
+        if str(package_version) != version:
+            raise ValueError("A versão do pacote não corresponde à versão anunciada.")
+
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir)
+        os.replace(str(plugin_dir), str(backup_dir))
+        moved_old = True
+        try:
+            os.replace(str(new_plugin), str(plugin_dir))
+        except Exception:
+            os.replace(str(backup_dir), str(plugin_dir))
+            moved_old = False
+            raise
+
+        shutil.rmtree(backup_dir, ignore_errors=True)
+        moved_old = False
+        decky.logger.info(f"SaveBackupSD atualizado para v{version}; reiniciando plugin_loader")
+        # O pequeno atraso permite que a resposta da chamada chegue ao frontend.
+        try:
+            subprocess.Popen(
+                ["sh", "-c", "sleep 3; systemctl restart plugin_loader"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            message = f"SaveBackupSD v{version} instalado. O Decky será reiniciado em instantes."
+        except OSError as restart_error:
+            decky.logger.warning(f"Atualização instalada, mas não foi possível reiniciar o Decky: {restart_error}")
+            message = f"SaveBackupSD v{version} instalado. Feche e reabra o menu Decky para carregar a versão nova."
+        return _res(True, message)
+    except Exception as e:  # noqa: BLE001
+        if moved_old and backup_dir.exists() and not plugin_dir.exists():
+            try:
+                os.replace(str(backup_dir), str(plugin_dir))
+            except OSError:
+                decky.logger.exception("Não foi possível restaurar a pasta anterior do SaveBackupSD")
+        decky.logger.exception("falha ao instalar atualização do SaveBackupSD")
+        return _res(False, f"Falha ao instalar atualização: {e}")
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 _watch_task: Optional["asyncio.Task[None]"] = None
@@ -1449,6 +1557,9 @@ class Plugin:
 
     async def get_update_status(self, force: bool = False) -> Dict[str, Any]:
         return await _run(check_update, bool(force))
+
+    async def install_update(self, version: str) -> Dict[str, Any]:
+        return await _run(_install_update, str(version))
 
     async def ack_update(self, version: str) -> bool:
         settings = load_settings()

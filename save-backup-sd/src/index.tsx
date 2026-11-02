@@ -76,6 +76,7 @@ interface UpdateStatus {
   latest: string;
   available: boolean;
   url: string;
+  download_url: string;
   error: string;
   has_token: boolean;
   notified: boolean;
@@ -96,6 +97,7 @@ const restoreGameCall = callable<[appid: number, filename: string], OpResult>("r
 const deleteBackupCall = callable<[appid: number, filename: string], OpResult>("delete_backup");
 const setAutoBackupCall = callable<[enabled: boolean], { auto_backup: boolean }>("set_auto_backup");
 const updateStatusCall = callable<[force: boolean], UpdateStatus>("get_update_status");
+const installUpdateCall = callable<[version: string], OpResult>("install_update");
 const ackUpdateCall = callable<[version: string], boolean>("ack_update");
 const setTokenCall = callable<[token: string], boolean>("set_github_token");
 const mountSdCall = callable<[], OpResult>("mount_sd");
@@ -272,6 +274,7 @@ const Content: FC = () => {
   const [mounting, setMounting] = useState(false);
   const [upd, setUpd] = useState<UpdateStatus | null>(null);
   const [checking, setChecking] = useState(false);
+  const [installing, setInstalling] = useState(false);
   const [token, setToken] = useState("");
   const saveTimer = useRef<number | undefined>(undefined);
 
@@ -316,6 +319,21 @@ const Content: FC = () => {
       toaster.toast({ title: "SaveBackupSD", body: `Erro: ${errText(e)}` });
     } finally {
       setChecking(false);
+    }
+  };
+
+  const installUpdate = async () => {
+    if (!upd?.available || !upd.download_url || installing) return;
+    setInstalling(true);
+    try {
+      const result = await installUpdateCall(upd.latest);
+      toaster.toast({ title: "SaveBackupSD", body: result.message });
+      if (!result.ok) return;
+      setUpd({ ...upd, current: upd.latest, available: false, error: "" });
+    } catch (e) {
+      toaster.toast({ title: "SaveBackupSD", body: `Falha na atualização: ${errText(e)}` });
+    } finally {
+      setInstalling(false);
     }
   };
 
@@ -606,14 +624,24 @@ const Content: FC = () => {
                 : upd.error
                   ? upd.error
                   : upd.available
-                    ? `Atualização disponível: v${upd.latest}. Baixe o zip em Releases no GitHub e instale pelo Decky.`
+                    ? `Nova versão disponível: v${upd.latest}. Baixe e instale diretamente por aqui.`
                     : "Você está na versão mais recente."
             }
           />
         </PanelSectionRow>
         <PanelSectionRow>
-          <ButtonItem layout="below" disabled={checking} onClick={() => void checkUpdates()}>
-            {checking ? "Verificando…" : "Verificar atualizações"}
+          <ButtonItem
+            layout="below"
+            disabled={checking || installing || (!upd?.available && !upd)}
+            onClick={() => void (upd?.available ? installUpdate() : checkUpdates())}
+          >
+            {installing
+              ? "Baixando e instalando…"
+              : checking
+                ? "Verificando…"
+                : upd?.available
+                  ? `Baixar atualização v${upd.latest}`
+                  : "Verificar atualizações"}
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
@@ -629,7 +657,7 @@ const notifyIfUpdate = async () => {
     if (r.available && !r.notified) {
       toaster.toast({
         title: "SaveBackupSD: atualização disponível",
-        body: `v${r.current} → v${r.latest}. Baixe o zip em Releases no GitHub.`,
+        body: `v${r.current} → v${r.latest}. Abra o SaveBackupSD para instalar a atualização.`,
         duration: 10000,
       });
       await ackUpdateCall(r.latest);
