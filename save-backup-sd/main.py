@@ -1181,34 +1181,100 @@ def _games_with_data() -> List[Dict[str, Any]]:
 
 
 def _game_art_data_url(appid: int) -> str:
-    """Carrega a arte local do jogo e devolve uma miniatura em data URL."""
+    """Procura a arte local em layouts comuns da Steam e devolve uma miniatura."""
+    home_candidates = [
+        _home(),
+        Path.home(),
+        Path(os.environ.get("HOME", str(Path.home()))),
+        Path("/home") / (getattr(decky, "DECKY_USER", "deck") or "deck"),
+    ]
+    roots: List[Path] = []
+    seen_roots = set()
+    for root in [*steam_roots(), *home_candidates]:
+        try:
+            resolved = root.resolve()
+        except OSError:
+            resolved = root
+        if resolved not in seen_roots:
+            seen_roots.add(resolved)
+            roots.append(resolved)
+
+    cache_dirs: List[Path] = []
+    grid_dirs: List[Path] = []
+    seen_dirs = set()
+
+    def add_dir(path: Path, target: List[Path]) -> None:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        if resolved not in seen_dirs:
+            seen_dirs.add(resolved)
+            target.append(resolved)
+
+    for root in roots:
+        # Instalações tradicionais, symlink ~/.steam/root e Steam Flatpak.
+        for steam in (
+            root / ".local" / "share" / "Steam",
+            root / ".steam" / "steam",
+            root / ".steam" / "root",
+            root / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "Steam",
+        ):
+            add_dir(steam / "appcache" / "librarycache", cache_dirs)
+            add_dir(steam / "steamapps" / "librarycache", cache_dirs)
+            userdata = steam / "userdata"
+            try:
+                for user_dir in userdata.iterdir():
+                    if user_dir.is_dir() and user_dir.name.isdigit():
+                        add_dir(user_dir / "config" / "grid", grid_dirs)
+            except OSError:
+                pass
+
+    # Prioriza nomes oficiais conhecidos e depois tenta qualquer imagem cujo nome
+    # contenha o AppID (a Steam e temas podem variar o sufixo/formato).
+    suffixes = (".jpg", ".jpeg", ".png", ".webp")
     candidates: List[Path] = []
-    names = (
+    exact_names = (
         f"{appid}_library_600x900.jpg", f"{appid}_library_600x900.png",
         f"{appid}_library_600x900.webp", f"{appid}_library_capsule.jpg",
         f"{appid}_library_capsule.png", f"{appid}_header.jpg", f"{appid}_header.png",
         f"{appid}_library_hero.jpg", f"{appid}_library_hero.png",
-    )
-    for root in steam_roots():
-        cache = root / "appcache" / "librarycache"
-        candidates.extend(cache / name for name in names)
-    grid_names = (
         f"{appid}p.jpg", f"{appid}p.png", f"{appid}p.webp",
         f"{appid}.jpg", f"{appid}.png", f"{appid}.webp",
         f"_{appid}_library_600x900.jpg", f"_{appid}_header.jpg",
     )
-    for user_dir in userdata_dirs():
-        grid = user_dir / "config" / "grid"
-        candidates.extend(grid / name for name in grid_names)
+    for directory in [*cache_dirs, *grid_dirs]:
+        candidates.extend(directory / name for name in exact_names)
 
+    for directory in [*cache_dirs, *grid_dirs]:
+        try:
+            matches = [
+                path for path in directory.iterdir()
+                if path.is_file()
+                and str(appid) in path.stem
+                and path.suffix.lower() in suffixes
+            ]
+            candidates.extend(sorted(matches, key=lambda p: (
+                0 if "600x900" in p.name.lower() or p.stem == f"{appid}p" else 1,
+                p.name.lower(),
+            )))
+        except OSError:
+            continue
+
+    seen_files = set()
     for path in candidates:
         try:
-            if not path.is_file() or path.stat().st_size > 4 * 1024 * 1024:
+            if path in seen_files:
+                continue
+            seen_files.add(path)
+            if not path.is_file():
+                continue
+            size = path.stat().st_size
+            if size <= 0 or size > 6 * 1024 * 1024:
                 continue
             raw = path.read_bytes()
             mime = "image/png" if path.suffix.lower() == ".png" else (
                 "image/webp" if path.suffix.lower() == ".webp" else "image/jpeg")
-            # Pillow é opcional: quando disponível, reduz a imagem para uma miniatura leve.
             try:
                 from PIL import Image
                 source = Image.open(io.BytesIO(raw)).convert("RGB")
@@ -1218,11 +1284,18 @@ def _game_art_data_url(appid: int) -> str:
                 raw, mime = output.getvalue(), "image/jpeg"
             except Exception:
                 pass
-            if len(raw) > 1400 * 1024:
+            if len(raw) > 2 * 1024 * 1024:
                 continue
+            decky.logger.info(f"SaveBackupSD: arte encontrada para AppID {appid}: {path}")
             return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
-        except OSError:
-            continue
+        except OSError as exc:
+            decky.logger.debug(f"SaveBackupSD: não foi possível ler arte {path}: {exc}")
+
+    searched = [str(p) for p in [*cache_dirs, *grid_dirs] if p.is_dir()]
+    decky.logger.warning(
+        f"SaveBackupSD: arte não encontrada para AppID {appid}; diretórios verificados: "
+        + (", ".join(searched) if searched else "nenhum diretório de arte Steam encontrado")
+    )
     return ""
 
 def _scan() -> Dict[str, Any]:
