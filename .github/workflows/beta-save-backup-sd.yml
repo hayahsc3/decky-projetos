@@ -1,0 +1,45 @@
+
+name: Beta - Build SaveBackupSD
+
+on:
+  push:
+    branches:
+      - beta/save-backup-sd
+    paths:
+      - "save-backup-sd/**"
+      - ".github/workflows/beta-save-backup-sd.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: save-backup-sd
+
+    steps:
+      - name: Baixar código
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Instalar dependências
+        run: npm install --no-audit --no-fund
+
+      - name: Compilar e gerar ZIP
+        run: npm run zip
+
+      - name: Disponibilizar ZIP beta
+        uses: actions/upload-artifact@v4
+        with:
+          name: SaveBackupSD-beta
+          path: save-backup-sd/SaveBackupSD.zip
+          if-no-files-found: error
+          retention-days: 14
