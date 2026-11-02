@@ -1320,7 +1320,7 @@ def check_update(force: bool = False) -> Dict[str, Any]:
     settings = load_settings()
     cur = current_version()
     token = settings["github_token"]
-    base: Dict[str, Any] = {"current": cur, "latest": cur, "available": False, "url": "",
+    base: Dict[str, Any] = {"current": cur, "latest": cur, "available": False, "url": "", "download_url": "",
                             "error": "", "has_token": bool(token), "notified": False}
     now = time.time()
     cached = _update_cache["data"]
