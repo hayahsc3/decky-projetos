@@ -1438,12 +1438,17 @@ def _install_update(version: str) -> Dict[str, Any]:
         moved_old = False
         decky.logger.info(f"SaveBackupSD atualizado para v{version}; reiniciando plugin_loader")
         # O pequeno atraso permite que a resposta da chamada chegue ao frontend.
-        subprocess.Popen(
-            ["sh", "-c", "sleep 3; systemctl restart plugin_loader"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        return _res(True, f"SaveBackupSD v{version} instalado. O Decky será reiniciado em instantes.")
+        try:
+            subprocess.Popen(
+                ["sh", "-c", "sleep 3; systemctl restart plugin_loader"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            message = f"SaveBackupSD v{version} instalado. O Decky será reiniciado em instantes."
+        except OSError as restart_error:
+            decky.logger.warning(f"Atualização instalada, mas não foi possível reiniciar o Decky: {restart_error}")
+            message = f"SaveBackupSD v{version} instalado. Feche e reabra o menu Decky para carregar a versão nova."
+        return _res(True, message)
     except Exception as e:  # noqa: BLE001
         if moved_old and backup_dir.exists() and not plugin_dir.exists():
             try:
