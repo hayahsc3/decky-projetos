@@ -657,7 +657,7 @@ const notifyIfUpdate = async () => {
     if (r.available && !r.notified) {
       toaster.toast({
         title: "SaveBackupSD: atualização disponível",
-        body: `v${r.current} → v${r.latest}. Baixe o zip em Releases no GitHub.`,
+        body: `v${r.current} → v${r.latest}. Abra o SaveBackupSD para instalar a atualização.`,
         duration: 10000,
       });
       await ackUpdateCall(r.latest);
