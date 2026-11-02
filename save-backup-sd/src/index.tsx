@@ -406,6 +406,20 @@ const Content: FC = () => {
 
   const visible = showAll || filter.trim() ? filtered : filtered.slice(0, PAGE_SIZE);
 
+  const openGamesPage = () => {
+    // O Decky mantém a posição de rolagem do painel entre as telas.
+    // Sobe pela árvore a partir do botão focado e zera o primeiro contêiner rolável.
+    let element = document.activeElement as HTMLElement | null;
+    while (element && element !== document.body) {
+      if (element.scrollHeight > element.clientHeight + 1) {
+        element.scrollTop = 0;
+        break;
+      }
+      element = element.parentElement;
+    }
+    setShowGamesPage(true);
+  };
+
   const openGame = (g: Game) => {
     showModal(<GameModal game={g} sdOk={sdOk} onChanged={() => void refresh()} />);
   };
@@ -554,7 +568,7 @@ const Content: FC = () => {
           <ButtonItem
             layout="below"
             disabled={loading || !data}
-            onClick={() => setShowGamesPage(true)}
+            onClick={openGamesPage}
             description={data ? `${data.games.length} jogo(s) instalado(s) · acessar backups e restaurações` : "Carregando lista de jogos…"}
           >
             Abrir lista de jogos
