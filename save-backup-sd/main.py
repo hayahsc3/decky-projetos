@@ -1344,7 +1344,7 @@ def check_update(force: bool = False) -> Dict[str, Any]:
                                   and str(a.get("name", "")).endswith(".zip")
                                   and a.get("browser_download_url")), None)
             base["download_url"] = str(package_asset.get("browser_download_url", "")) if package_asset else ""
-            base["available"] = parse_version(latest) > parse_version(cur)
+            base["available"] = parse_version(latest) > parse_version(cur) and bool(base["download_url"])
     elif status == 0:
         base["error"] = "Não foi possível conectar ao GitHub: " + (detail[:200] or "sem resposta") + "."
     elif status in (401, 404) and not token:
