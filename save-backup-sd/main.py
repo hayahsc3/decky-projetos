@@ -13,6 +13,7 @@ Destino: <microSD>/DeckSaveBackup/<appid> - <nome do jogo>/AAAA-MM-DD_HH-MM-SS.t
 """
 
 import asyncio
+import base64
 import hashlib
 import io
 import json
@@ -1178,6 +1179,52 @@ def _games_with_data() -> List[Dict[str, Any]]:
     )
 
 
+
+def _game_art_data_url(appid: int) -> str:
+    """Carrega a arte local do jogo e devolve uma miniatura em data URL."""
+    candidates: List[Path] = []
+    names = (
+        f"{appid}_library_600x900.jpg", f"{appid}_library_600x900.png",
+        f"{appid}_library_600x900.webp", f"{appid}_library_capsule.jpg",
+        f"{appid}_library_capsule.png", f"{appid}_header.jpg", f"{appid}_header.png",
+        f"{appid}_library_hero.jpg", f"{appid}_library_hero.png",
+    )
+    for root in steam_roots():
+        cache = root / "appcache" / "librarycache"
+        candidates.extend(cache / name for name in names)
+    grid_names = (
+        f"{appid}p.jpg", f"{appid}p.png", f"{appid}p.webp",
+        f"{appid}.jpg", f"{appid}.png", f"{appid}.webp",
+        f"_{appid}_library_600x900.jpg", f"_{appid}_header.jpg",
+    )
+    for user_dir in userdata_dirs():
+        grid = user_dir / "config" / "grid"
+        candidates.extend(grid / name for name in grid_names)
+
+    for path in candidates:
+        try:
+            if not path.is_file() or path.stat().st_size > 4 * 1024 * 1024:
+                continue
+            raw = path.read_bytes()
+            mime = "image/png" if path.suffix.lower() == ".png" else (
+                "image/webp" if path.suffix.lower() == ".webp" else "image/jpeg")
+            # Pillow é opcional: quando disponível, reduz a imagem para uma miniatura leve.
+            try:
+                from PIL import Image
+                source = Image.open(io.BytesIO(raw)).convert("RGB")
+                source.thumbnail((240, 360), Image.Resampling.LANCZOS)
+                output = io.BytesIO()
+                source.save(output, format="JPEG", quality=78, optimize=True)
+                raw, mime = output.getvalue(), "image/jpeg"
+            except Exception:
+                pass
+            if len(raw) > 1400 * 1024:
+                continue
+            return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+        except OSError:
+            continue
+    return ""
+
 def _scan() -> Dict[str, Any]:
     settings = load_settings()
     dest, err, sd = get_destination(settings)
@@ -1507,6 +1554,9 @@ async def _watch() -> None:
 class Plugin:
     async def scan(self) -> Dict[str, Any]:
         return await _run(_scan)
+
+    async def get_game_art(self, appid: int) -> str:
+        return await _run(_game_art_data_url, int(appid))
 
     async def list_backups(self, appid: int) -> List[Dict[str, Any]]:
         return await _run(_list_backups, int(appid))
