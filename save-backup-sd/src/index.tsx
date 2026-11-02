@@ -263,6 +263,7 @@ const Content: FC = () => {
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
   const [showAll, setShowAll] = useState(false);
+  const [showGamesPage, setShowGamesPage] = useState(false);
   const [busyAll, setBusyAll] = useState(false);
   const [progress, setProgress] = useState("");
   const [maxBackups, setMaxBackups] = useState(5);
@@ -405,9 +406,91 @@ const Content: FC = () => {
 
   const visible = showAll || filter.trim() ? filtered : filtered.slice(0, PAGE_SIZE);
 
+  const openGamesPage = () => {
+    // O Decky mantém a posição de rolagem do painel entre as telas.
+    // Sobe pela árvore a partir do botão focado e zera o primeiro contêiner rolável.
+    let element = document.activeElement as HTMLElement | null;
+    while (element && element !== document.body) {
+      if (element.scrollHeight > element.clientHeight + 1) {
+        element.scrollTop = 0;
+        break;
+      }
+      element = element.parentElement;
+    }
+    setShowGamesPage(true);
+  };
+
   const openGame = (g: Game) => {
     showModal(<GameModal game={g} sdOk={sdOk} onChanged={() => void refresh()} />);
   };
+
+  if (showGamesPage) {
+    return (
+      <>
+        <PanelSection title="Jogos instalados">
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={() => setShowGamesPage(false)}>
+              Voltar ao painel principal
+            </ButtonItem>
+          </PanelSectionRow>
+          {error && (
+            <PanelSectionRow>
+              <Field label="Erro" description={error} />
+            </PanelSectionRow>
+          )}
+          {data && !data.steam_found && (
+            <PanelSectionRow>
+              <Field label="Steam não encontrada" description="Não achei a pasta da Steam no usuário atual." />
+            </PanelSectionRow>
+          )}
+          <PanelSectionRow>
+            <TextField
+              label="Buscar jogo"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+            />
+          </PanelSectionRow>
+          {visible.map((g) => (
+            <PanelSectionRow key={g.appid}>
+              <ButtonItem layout="below" onClick={() => openGame(g)} description={describeGame(g)}>
+                {g.backup_count > 0 ? "💾 " : ""}
+                {g.name}
+                {g.kind === "nonsteam" ? " (não-Steam)" : ""}
+              </ButtonItem>
+            </PanelSectionRow>
+          ))}
+          {!showAll && !filter.trim() && filtered.length > PAGE_SIZE && (
+            <PanelSectionRow>
+              <ButtonItem layout="below" onClick={() => setShowAll(true)}>
+                Mostrar todos ({filtered.length})
+              </ButtonItem>
+            </PanelSectionRow>
+          )}
+          {data && data.games.length === 0 && !error && (
+            <PanelSectionRow>
+              <Field description="Nenhum jogo instalado encontrado." />
+            </PanelSectionRow>
+          )}
+        </PanelSection>
+
+        {data && data.orphans.length > 0 && (
+          <PanelSection title="Backups de jogos não instalados">
+            <PanelSectionRow>
+              <Field description="Instale o jogo, abra-o uma vez e ele aparece na lista acima com a opção Restaurar." />
+            </PanelSectionRow>
+            {data.orphans.map((o) => (
+              <PanelSectionRow key={o.appid}>
+                <Field
+                  label={o.name}
+                  description={`${o.backup_count} backup(s) · último: ${fmtDate(o.last_backup)}`}
+                />
+              </PanelSectionRow>
+            ))}
+          </PanelSection>
+        )}
+      </>
+    );
+  }
 
   return (
     <>
@@ -480,45 +563,17 @@ const Content: FC = () => {
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title={`Jogos instalados${data ? ` (${data.games.length})` : ""}`}>
-        {error && (
-          <PanelSectionRow>
-            <Field label="Erro" description={error} />
-          </PanelSectionRow>
-        )}
-        {data && !data.steam_found && (
-          <PanelSectionRow>
-            <Field label="Steam não encontrada" description="Não achei a pasta da Steam no usuário atual." />
-          </PanelSectionRow>
-        )}
+      <PanelSection title="Jogos">
         <PanelSectionRow>
-          <TextField
-            label="Buscar jogo"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-          />
+          <ButtonItem
+            layout="below"
+            disabled={loading || !data}
+            onClick={openGamesPage}
+            description={data ? `${data.games.length} jogo(s) instalado(s) · acessar backups e restaurações` : "Carregando lista de jogos…"}
+          >
+            Abrir lista de jogos
+          </ButtonItem>
         </PanelSectionRow>
-        {visible.map((g) => (
-          <PanelSectionRow key={g.appid}>
-            <ButtonItem layout="below" onClick={() => openGame(g)} description={describeGame(g)}>
-              {g.backup_count > 0 ? "💾 " : ""}
-              {g.name}
-              {g.kind === "nonsteam" ? " (não-Steam)" : ""}
-            </ButtonItem>
-          </PanelSectionRow>
-        ))}
-        {!showAll && !filter.trim() && filtered.length > PAGE_SIZE && (
-          <PanelSectionRow>
-            <ButtonItem layout="below" onClick={() => setShowAll(true)}>
-              Mostrar todos ({filtered.length})
-            </ButtonItem>
-          </PanelSectionRow>
-        )}
-        {data && data.games.length === 0 && !error && (
-          <PanelSectionRow>
-            <Field description="Nenhum jogo instalado encontrado." />
-          </PanelSectionRow>
-        )}
       </PanelSection>
 
       {upd?.error && upd.error.includes("token") && (
@@ -539,21 +594,7 @@ const Content: FC = () => {
         </PanelSection>
       )}
 
-      {data && data.orphans.length > 0 && (
-        <PanelSection title="Backups de jogos não instalados">
-          <PanelSectionRow>
-            <Field description="Instale o jogo, abra-o uma vez e ele aparece na lista acima com a opção Restaurar." />
-          </PanelSectionRow>
-          {data.orphans.map((o) => (
-            <PanelSectionRow key={o.appid}>
-              <Field
-                label={o.name}
-                description={`${o.backup_count} backup(s) · último: ${fmtDate(o.last_backup)}`}
-              />
-            </PanelSectionRow>
-          ))}
-        </PanelSection>
-      )}
+
 
       <PanelSection title="Versão">
         <PanelSectionRow>

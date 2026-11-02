@@ -1,6 +1,6 @@
 {
   "name": "save-backup-sd",
-  "version": "1.1.0",
+  "version": "1.1.5",
   "description": "Backup e restauração de saves para o microSD (Decky Loader).",
   "type": "module",
   "scripts": {
@@ -25,7 +25,10 @@
   },
   "pnpm": {
     "peerDependencyRules": {
-      "ignoreMissing": ["react", "react-dom"]
+      "ignoreMissing": [
+        "react",
+        "react-dom"
+      ]
     }
   }
 }
